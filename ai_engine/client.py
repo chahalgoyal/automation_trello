@@ -1,111 +1,89 @@
 """
-Google GenAI client for test suite generation, code generation, and repair.
+Ollama client for test suite generation, code generation, and repair.
 
-Uses the native google-genai SDK (not the OpenAI compatibility shim).
+Uses the Ollama local REST API endpoint (http://localhost:11434/api/chat).
 All LLM interactions go through this module.
 """
 
 import os
 import re
 import time
+import json
+import requests
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-
 from . import prompts
 
 load_dotenv()
 
+# Configuration
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 
-# ── Internals ────────────────────────────────────────────────────────────────
 
-
-def _get_client() -> genai.Client:
-    """Create a GenAI client using the configured API key."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY is not configured. "
-            "Set it in your .env file or as an environment variable."
-        )
-    return genai.Client(api_key=api_key)
-
+# -- Internals ----------------------------------------------------------------
 
 def _get_model() -> str:
     """Return the model name from env or default."""
-    return os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+    # Based on the user's available tags, gemma4:latest is the smartest option
+    return os.getenv("OLLAMA_MODEL", "gemma4:latest")
 
 
 def _extract_code(content: str) -> str:
     """Strip markdown code fences from LLM response, returning raw Python."""
-    match = re.search(r"```(?:python)?\s*(.*?)```", content, re.DOTALL | re.IGNORECASE)
+    match = re.search(r"```(?:python|py)?\s*(.*?)```", content, re.DOTALL | re.IGNORECASE)
     return (match.group(1) if match else content).strip() + "\n"
 
 
 def _extract_markdown(content: str) -> str:
     """Strip markdown fences if the LLM wraps the output."""
-    match = re.search(r"```(?:markdown)?\s*(.*?)```", content, re.DOTALL | re.IGNORECASE)
+    match = re.search(r"```(?:markdown|md)?\s*(.*?)```", content, re.DOTALL | re.IGNORECASE)
     return (match.group(1) if match else content).strip() + "\n"
 
 
 def _request(system_prompt: str, user_prompt: str, model: str | None = None) -> str:
     """
-    Send a generation request to GenAI with automatic retry on transient errors.
-
-    Retries up to 3 times on server errors (500/502/503/504).
-    Hard-fails immediately on quota exhaustion (429).
+    Send a generation request to the local Ollama instance.
     """
     model = model or _get_model()
-    client = _get_client()
-
-    config = types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        temperature=0.2,
-    )
+    
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.2
+        }
+    }
 
     last_error = None
     for attempt in range(3):
         try:
-            response = client.models.generate_content(
-                model=model,
-                contents=user_prompt,
-                config=config,
-            )
-            content = response.text or ""
+            response = requests.post(OLLAMA_URL, json=payload, timeout=300)
+            response.raise_for_status()
+            
+            data = response.json()
+            content = data.get("message", {}).get("content", "")
+            
             if not content.strip():
-                raise RuntimeError("GenAI returned an empty response")
+                raise RuntimeError("Ollama returned an empty response")
             return content
 
+        except requests.exceptions.RequestException as error:
+            last_error = error
+            print(f"  [Ollama] Connection error (attempt {attempt + 1}/3): {error}")
+            time.sleep(2)
         except Exception as error:
             last_error = error
-            error_str = str(error).lower()
+            print(f"  [Ollama] Transient error (attempt {attempt + 1}/3): {error}")
+            time.sleep(2)
 
-            # Quota exhaustion — no point retrying
-            if "429" in error_str or "quota" in error_str or "rate limit" in error_str:
-                raise RuntimeError(
-                    "GenAI quota exhausted. Wait for the quota to reset or "
-                    "use an API key with available billing/quota."
-                ) from error
-
-            # Last attempt — give up
-            if attempt == 2:
-                raise RuntimeError(
-                    f"GenAI request failed after 3 attempts: {error}"
-                ) from error
-
-            # Transient error — retry with backoff
-            wait = 2 ** attempt
-            print(f"  [GenAI] Transient error (attempt {attempt + 1}/3), "
-                  f"retrying in {wait}s: {error}")
-            time.sleep(wait)
-
-    # Should never reach here, but just in case
-    raise RuntimeError(f"GenAI request failed: {last_error}")
+    raise RuntimeError(f"Ollama request failed after 3 attempts: {last_error}")
 
 
-# ── Public API ───────────────────────────────────────────────────────────────
-
+# -- Public API ----------------------------------------------------------------
 
 def generate_test_suite(
     url: str,
@@ -116,9 +94,6 @@ def generate_test_suite(
     """
     Generate a structured test suite .md from the application URL,
     browser snapshot, and user instructions.
-
-    This is the key differentiator: the AI creates the test specification
-    dynamically based on what it actually sees on the page.
     """
     user_prompt = (
         f"APPLICATION URL: {url}\n\n"
@@ -128,7 +103,7 @@ def generate_test_suite(
     if snapshot:
         user_prompt += f"BROWSER ACCESSIBILITY SNAPSHOT:\n{snapshot}\n"
 
-    print("  [GenAI] Generating test suite specification...")
+    print(f"  [Ollama] Generating test suite specification using {_get_model()}...")
     content = _request(prompts.SUITE_GENERATION_SYSTEM, user_prompt)
     return _extract_markdown(content)
 
@@ -151,7 +126,7 @@ def generate_test_code(
     if snapshot:
         user_prompt += f"BROWSER ACCESSIBILITY SNAPSHOT:\n{snapshot}\n"
 
-    print("  [GenAI] Generating executable test code...")
+    print(f"  [Ollama] Generating executable test code using {_get_model()}...")
     content = _request(system, user_prompt)
     return _extract_code(content)
 
@@ -178,9 +153,12 @@ def repair_test_code(
         parts.append(f"BROWSER ACCESSIBILITY SNAPSHOT:\n{snapshot}\n")
     parts.append(f"CURRENT TEST CODE:\n{current_code}\n")
     parts.append(f"PYTEST FAILURE OUTPUT:\n{failure_output}\n")
+    
+    # Give the local model explicit guidance on the repair format
+    parts.append("\nIMPORTANT INSTRUCTION: Return ONLY the raw Python code. Wrap it in ```python fences.")
 
     user_prompt = "\n".join(parts)
 
-    print("  [GenAI] Analyzing failure and generating repair...")
+    print(f"  [Ollama] Analyzing failure and generating repair using {_get_model()}...")
     content = _request(system, user_prompt)
     return _extract_code(content)

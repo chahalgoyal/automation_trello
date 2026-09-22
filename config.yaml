@@ -8,7 +8,7 @@ target_url: "https://trellos.goyal.me"
 test_type: "ui"
 
 # Google GenAI model to use
-model: "gemini-3.6-flash"
+model: "gemma4:latest"
 
 # How many times the AI can attempt to repair failing tests
 max_repair_attempts: 3
