@@ -1,0 +1,11 @@
+# Configuration for the POM Automation Agent
+
+target_url: "https://www.saucedemo.com"
+
+instructions: |
+  Create a complete POM test suite for this application.
+  Test the login page. Add happy path login (standard_user / secret_sauce), 
+  negative paths (locked_out_user, invalid passwords, empty inputs). 
+  The suite should model the LoginPage and an InventoryPage (which you reach after successful login).
+
+model: "gemini-3.6-flash"
