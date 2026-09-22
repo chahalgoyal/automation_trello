@@ -1,0 +1,8 @@
+{
+  "name": "ai-qa-agent-mcp",
+  "private": true,
+  "description": "Node.js dependency for Playwright MCP browser snapshot collection",
+  "dependencies": {
+    "@playwright/mcp": "^0.0.82"
+  }
+}

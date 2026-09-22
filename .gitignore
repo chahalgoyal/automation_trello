@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Environment
+.env
+
+# Generated output (AI-created, not tracked)
+generated/
+reports/
+
+# Node.js (MCP dependency only)
+node_modules/
+package-lock.json
+
+# Playwright MCP logs
+.playwright-mcp/
