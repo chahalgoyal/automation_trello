@@ -1,0 +1,23 @@
+# ──────────────────────────────────────────────
+#  AI QA Agent — Configuration
+# ──────────────────────────────────────────────
+
+target_url: "https://trellos.goyal.me"
+
+# "ui" (Playwright browser tests) or "api" (requests-based API tests)
+test_type: "ui"
+
+# Google GenAI model to use
+model: "gemini-3.6-flash"
+
+# How many times the AI can attempt to repair failing tests
+max_repair_attempts: 3
+
+# High-level instructions for the AI test suite generator.
+# The AI will analyze the page and create specific test cases from these.
+instructions: |
+  Generate a comprehensive test suite for this application.
+  Explore the page and identify all testable features.
+  Note: This website does NOT require authentication. Do not write login tests.
+  Cover navigation, core functionality, and edge cases based on what you observe on the page.
+  Make tests independent where possible.
