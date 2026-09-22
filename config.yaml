@@ -7,8 +7,8 @@ target_url: "https://trellos.goyal.me"
 # "ui" (Playwright browser tests) or "api" (requests-based API tests)
 test_type: "ui"
 
-# Google GenAI model to use
-model: "gemini-3.6-flash"
+# Groq model to use
+model: "openai/gpt-oss-120b"
 
 # How many times the AI can attempt to repair failing tests
 max_repair_attempts: 3

@@ -113,10 +113,10 @@ def main():
 
     # Set model from config (env var takes precedence if already set)
     if config.get("model"):
-        os.environ.setdefault("GEMINI_MODEL", config["model"])
+        os.environ.setdefault("GROQ_MODEL", config["model"])
 
     # -- Banner -----------------------------------------------------------
-    model_name = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+    model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
     print()
     print("+" + "-" * 58 + "+")
     print("|   AI QA Agent - Generate -> Run -> Repair                |")

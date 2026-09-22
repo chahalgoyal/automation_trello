@@ -1,7 +1,7 @@
 """
-Google GenAI client for test suite generation, code generation, and repair.
+Groq client for test suite generation, code generation, and repair.
 
-Uses the native google-genai SDK (not the OpenAI compatibility shim).
+Uses the native groq SDK with rate-limit-aware pacing for the free tier.
 All LLM interactions go through this module.
 """
 
@@ -10,31 +10,38 @@ import re
 import time
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from groq import Groq
 
 from . import prompts
 
 load_dotenv()
 
+# -- Free-tier budget management -----------------------------------------------
+# Groq free tier for gpt-oss-120b: 8000 TPM (tokens per minute).
+# We pace calls so the per-minute budget has time to refresh.
 
-# ── Internals ────────────────────────────────────────────────────────────────
+_last_call_time: float = 0.0       # epoch seconds of last successful call
+_PACE_SECONDS: float = 20.0        # minimum gap between calls (3 calls / min)
+_RATE_LIMIT_WAIT: float = 65.0     # wait on 429 for TPM to fully reset
 
 
-def _get_client() -> genai.Client:
-    """Create a GenAI client using the configured API key."""
-    api_key = os.getenv("GEMINI_API_KEY")
+# -- Internals ----------------------------------------------------------------
+
+
+def _get_client() -> Groq:
+    """Create a Groq client using the configured API key."""
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "GEMINI_API_KEY is not configured. "
+            "GROQ_API_KEY is not configured. "
             "Set it in your .env file or as an environment variable."
         )
-    return genai.Client(api_key=api_key)
+    return Groq(api_key=api_key.strip())
 
 
 def _get_model() -> str:
     """Return the model name from env or default."""
-    return os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+    return os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
 def _extract_code(content: str) -> str:
@@ -49,62 +56,96 @@ def _extract_markdown(content: str) -> str:
     return (match.group(1) if match else content).strip() + "\n"
 
 
-def _request(system_prompt: str, user_prompt: str, model: str | None = None) -> str:
-    """
-    Send a generation request to GenAI with automatic retry on transient errors.
+def _truncate(text: str, max_chars: int) -> str:
+    """Truncate text to max_chars, appending a note if truncated."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n\n... [TRUNCATED] ..."
 
-    Retries up to 3 times on server errors (500/502/503/504).
-    Hard-fails immediately on quota exhaustion (429).
+
+def _pace():
+    """Wait if needed to avoid hitting the per-minute token budget."""
+    global _last_call_time
+    if _last_call_time > 0:
+        elapsed = time.time() - _last_call_time
+        if elapsed < _PACE_SECONDS:
+            wait = _PACE_SECONDS - elapsed
+            print(f"  [Groq] Pacing: waiting {wait:.0f}s for rate limit budget...")
+            time.sleep(wait)
+
+
+def _request(
+    system_prompt: str,
+    user_prompt: str,
+    model: str | None = None,
+    max_tokens: int = 2000,
+) -> str:
     """
+    Send a generation request to Groq with rate-limit-aware retry.
+    """
+    global _last_call_time
     model = model or _get_model()
     client = _get_client()
 
-    config = types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        temperature=0.2,
-    )
+    # Pace between calls
+    _pace()
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
 
     last_error = None
     for attempt in range(3):
         try:
-            response = client.models.generate_content(
+            response = client.chat.completions.create(
                 model=model,
-                contents=user_prompt,
-                config=config,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=max_tokens,
             )
-            content = response.text or ""
+            _last_call_time = time.time()
+
+            content = response.choices[0].message.content or ""
             if not content.strip():
-                raise RuntimeError("GenAI returned an empty response")
+                raise RuntimeError("Groq returned an empty response")
             return content
 
         except Exception as error:
             last_error = error
             error_str = str(error).lower()
 
-            # Quota exhaustion — no point retrying
-            if "429" in error_str or "quota" in error_str or "rate limit" in error_str:
+            # Auth errors — don't retry
+            if "401" in error_str or ("403" in error_str and "network" in error_str):
                 raise RuntimeError(
-                    "GenAI quota exhausted. Wait for the quota to reset or "
-                    "use an API key with available billing/quota."
+                    f"Groq API Error (auth): {error}"
                 ) from error
+
+            # Rate limit — wait for the full minute to reset
+            if "429" in error_str or "413" in error_str or "rate_limit" in error_str:
+                if attempt < 2:
+                    print(f"  [Groq] Rate limited (attempt {attempt + 1}/3), "
+                          f"waiting {_RATE_LIMIT_WAIT:.0f}s for budget to reset...")
+                    time.sleep(_RATE_LIMIT_WAIT)
+                    _last_call_time = time.time()
+                    continue
 
             # Last attempt — give up
             if attempt == 2:
                 raise RuntimeError(
-                    f"GenAI request failed after 3 attempts: {error}"
+                    f"Groq request failed after 3 attempts: {error}"
                 ) from error
 
-            # Transient error — retry with backoff
+            # Other transient error — short backoff
             wait = 2 ** attempt
-            print(f"  [GenAI] Transient error (attempt {attempt + 1}/3), "
+            print(f"  [Groq] Transient error (attempt {attempt + 1}/3), "
                   f"retrying in {wait}s: {error}")
             time.sleep(wait)
 
-    # Should never reach here, but just in case
-    raise RuntimeError(f"GenAI request failed: {last_error}")
+    raise RuntimeError(f"Groq request failed: {last_error}")
 
 
-# ── Public API ───────────────────────────────────────────────────────────────
+# -- Public API ----------------------------------------------------------------
 
 
 def generate_test_suite(
@@ -113,23 +154,17 @@ def generate_test_suite(
     instructions: str,
     test_type: str = "ui",
 ) -> str:
-    """
-    Generate a structured test suite .md from the application URL,
-    browser snapshot, and user instructions.
-
-    This is the key differentiator: the AI creates the test specification
-    dynamically based on what it actually sees on the page.
-    """
+    # Keep prompt compact: snapshot is the largest part
     user_prompt = (
         f"APPLICATION URL: {url}\n\n"
         f"TEST TYPE: {test_type.upper()}\n\n"
         f"USER INSTRUCTIONS:\n{instructions}\n\n"
     )
     if snapshot:
-        user_prompt += f"BROWSER ACCESSIBILITY SNAPSHOT:\n{snapshot}\n"
+        user_prompt += f"BROWSER ACCESSIBILITY SNAPSHOT:\n{_truncate(snapshot, 6000)}\n"
 
-    print("  [GenAI] Generating test suite specification...")
-    content = _request(prompts.SUITE_GENERATION_SYSTEM, user_prompt)
+    print("  [Groq] Generating test suite specification...")
+    content = _request(prompts.SUITE_GENERATION_SYSTEM, user_prompt, max_tokens=2000)
     return _extract_markdown(content)
 
 
@@ -138,21 +173,18 @@ def generate_test_code(
     snapshot: str,
     test_type: str = "ui",
 ) -> str:
-    """
-    Generate executable pytest code from a test suite .md and browser snapshot.
-    """
     system = (
         prompts.UI_CODE_GENERATION_SYSTEM
         if test_type == "ui"
         else prompts.API_CODE_GENERATION_SYSTEM
     )
 
-    user_prompt = f"TEST SUITE SPECIFICATION:\n{suite_md}\n\n"
+    user_prompt = f"TEST SUITE SPECIFICATION:\n{_truncate(suite_md, 5000)}\n\n"
     if snapshot:
-        user_prompt += f"BROWSER ACCESSIBILITY SNAPSHOT:\n{snapshot}\n"
+        user_prompt += f"BROWSER ACCESSIBILITY SNAPSHOT:\n{_truncate(snapshot, 4000)}\n"
 
-    print("  [GenAI] Generating executable test code...")
-    content = _request(system, user_prompt)
+    print("  [Groq] Generating executable test code...")
+    content = _request(system, user_prompt, max_tokens=3000)
     return _extract_code(content)
 
 
@@ -163,24 +195,21 @@ def repair_test_code(
     failure_output: str,
     test_type: str = "ui",
 ) -> str:
-    """
-    Repair failing test code by sending the suite, snapshot, current code,
-    and failure traceback to the AI for correction.
-    """
     system = (
         prompts.UI_REPAIR_SYSTEM
         if test_type == "ui"
         else prompts.API_REPAIR_SYSTEM
     )
 
-    parts = [f"TEST SUITE SPECIFICATION:\n{suite_md}\n"]
-    if snapshot:
-        parts.append(f"BROWSER ACCESSIBILITY SNAPSHOT:\n{snapshot}\n")
-    parts.append(f"CURRENT TEST CODE:\n{current_code}\n")
-    parts.append(f"PYTEST FAILURE OUTPUT:\n{failure_output}\n")
-
+    # For repair, prioritize code + error. Skip snapshot entirely,
+    # keep suite summary minimal. This keeps us well under 8000 TPM.
+    parts = [
+        f"CURRENT TEST CODE:\n{_truncate(current_code, 6000)}\n",
+        f"PYTEST FAILURE OUTPUT:\n{_truncate(failure_output, 3000)}\n",
+        f"TEST SUITE (summary):\n{_truncate(suite_md, 2000)}\n",
+    ]
     user_prompt = "\n".join(parts)
 
-    print("  [GenAI] Analyzing failure and generating repair...")
-    content = _request(system, user_prompt)
+    print("  [Groq] Analyzing failure and generating repair...")
+    content = _request(system, user_prompt, max_tokens=3000)
     return _extract_code(content)
