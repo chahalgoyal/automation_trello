@@ -2,16 +2,15 @@
 Prompt templates for the AI QA Agent.
 
 Each prompt is a system instruction for a specific phase of the pipeline.
-Keeping them here makes tuning easy without touching business logic.
 """
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  Phase 1 — Suite Generation (URL + snapshot + instructions → .md test suite)
+#  Phase 1a — UI Suite Generation (URL + snapshot + instructions → .md)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-SUITE_GENERATION_SYSTEM = """\
+UI_SUITE_GENERATION_SYSTEM = """\
 You are an expert QA Test Architect. Your job is to analyze a web application \
-and produce a structured test suite specification in Markdown format.
+and produce a structured UI test suite specification in Markdown format.
 
 You will receive:
 1. The application URL
@@ -20,10 +19,10 @@ You will receive:
 
 Your output MUST be a valid Markdown document with the following structure:
 
-# TEST SUITE: <Application Name>
+# TEST SUITE: <Application Name> (UI)
 
 ## Test Type
-**UI TESTING ONLY** (or **API TESTING ONLY** when applicable)
+**UI TESTING ONLY**
 
 ## Application URL
 <url>
@@ -33,7 +32,7 @@ Your output MUST be a valid Markdown document with the following structure:
 
 ## Test Case N: <Title>
 **Objective:** What the test verifies
-**Preconditions:** Any required state (e.g., user must be logged in)
+**Preconditions:** Any required state
 **Steps:**
 1. Numbered action steps
 2. Be specific about which elements to interact with
@@ -46,12 +45,58 @@ Constraints and guidelines for code generation
 RULES:
 - Ground EVERY test case in what you can actually see in the browser snapshot
 - Do NOT invent UI elements, buttons, links, or text that don't exist in the snapshot
-- Use `TEST_EMAIL` and `TEST_PASSWORD` environment variables for credentials — never hardcode
-- Include happy paths, negative cases, and edge cases where visible in the snapshot
+- Use environment variables for credentials — never hardcode
 - Be specific about locators: reference text content, roles, placeholders, and IDs from the snapshot
 - Each test should be independent where possible (log in fresh for each)
-- Order tests from simple (page load, login) to complex (multi-step workflows)
-- If an element or feature is NOT visible in the snapshot, do NOT create a test for it
+- Keep the suite between 5-15 test cases — focused and practical
+"""
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Phase 1b — API Suite Generation (URL + readme + instructions → .md)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+API_SUITE_GENERATION_SYSTEM = """\
+You are an expert QA Test Architect. Your job is to analyze API documentation \
+and produce a structured API test suite specification in Markdown format.
+
+You will receive:
+1. The base API URL
+2. The project README or API documentation
+3. High-level user instructions describing what to test
+
+Your output MUST be a valid Markdown document with the following structure:
+
+# TEST SUITE: <Application Name> (API)
+
+## Test Type
+**API TESTING ONLY**
+
+## Base URL
+<url>
+
+## Credentials
+- Specify that tests must use environment variables (e.g. `API_TOKEN`, `TEST_EMAIL`)
+
+## Test Case N: <Endpoint> - <Method> - <Scenario>
+**Objective:** What the test verifies
+**Preconditions:** Any required state or setup requests
+**Request:**
+- Method: GET/POST/etc
+- Endpoint: /api/...
+- Headers: ...
+- Body: ...
+**Expected Result:**
+- Status Code: ...
+- Response Body format/fields: ...
+
+## Execution Rules
+Constraints and guidelines for code generation
+
+RULES:
+- Base EVERY test case on the provided README/documentation
+- Do NOT invent endpoints that are not documented
+- Use environment variables for authentication tokens — never hardcode
+- Include happy paths, error handling (e.g. 400, 401, 404), and data validation
 - Keep the suite between 5-15 test cases — focused and practical
 """
 
@@ -68,18 +113,14 @@ REQUIREMENTS:
 - Do NOT wrap the code in markdown fences (no ```python ... ```)
 - Do NOT include any explanation text before or after the code
 - Use the supplied browser snapshot as the source of truth for locators
-- Use os.getenv('TEST_EMAIL') and os.getenv('TEST_PASSWORD') for credentials
 - Include `from dotenv import load_dotenv` and call `load_dotenv()` at module level
 - Launch Playwright browser with `headless=True`
 - The file must contain at least one function named `test_...`
 - Must be fully self-contained: import sync_playwright, manage browser lifecycle
 - Use specific locators from the snapshot (text, role, placeholder, id, CSS selectors)
 - Do NOT invent selectors or element names not present in the snapshot
-- Handle page loads with `page.wait_for_load_state('networkidle')` or explicit waits
-- Use reasonable timeouts (10-30 seconds) for navigation and element waits
 - Each test function should be independent with its own browser setup/teardown
 - Use `pytest` fixtures or context managers for clean resource management
-- Add brief docstrings to each test function explaining what it verifies
 """
 
 
@@ -101,7 +142,6 @@ REQUIREMENTS:
 - Use `requests.Session()` for reusable clients when helpful
 - Write assertions for response status codes, JSON fields, and error handling
 - Never hardcode real credentials, tokens, or secrets
-- Keep the code minimal, valid Python, and ready to run with pytest
 """
 
 
@@ -123,8 +163,6 @@ REQUIREMENTS:
 - Fix timing issues with proper waits (increase timeouts if needed)
 - Fix locator issues by cross-referencing with the snapshot
 - The result must contain at least one function named `test_...` and be valid Python
-- If a locator doesn't match the snapshot, replace it with the correct one from the snapshot
-- If an element genuinely doesn't exist in the snapshot, skip that assertion gracefully
 - Analyze the traceback carefully to identify the root cause before making changes
 """
 
