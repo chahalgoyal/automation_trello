@@ -33,12 +33,13 @@ class TestResult:
         return self.stderr or self.stdout
 
 
-def run_pytest(test_file: Path, collect_only: bool = False) -> TestResult:
+def run_pytest(test_file: Path, report_dir: Path, collect_only: bool = False) -> TestResult:
     """
     Execute pytest on the given test file and return structured results.
 
     Args:
         test_file: Path to the generated test .py file
+        report_dir: Path to output test reports
         collect_only: If True, only collect tests without executing them
 
     Returns:
@@ -46,21 +47,18 @@ def run_pytest(test_file: Path, collect_only: bool = False) -> TestResult:
     """
     test_path = test_file.resolve()
 
-    # The project root is 2 levels up from generated/tests/test_case.py
-    project_root = test_path.parents[2]
-    reports_dir = project_root / "reports"
-
     # Build the pytest command
     command = [sys.executable, "-m", "pytest", str(test_path), "-v"]
 
     if collect_only:
         command.append("--collect-only")
     else:
-        reports_dir.mkdir(parents=True, exist_ok=True)
+        report_dir.mkdir(parents=True, exist_ok=True)
         command.extend([
-            "--junitxml", str(reports_dir / "test-results.xml"),
-            "--html", str(reports_dir / "test-report.html"),
+            "--junitxml", str(report_dir / "test-results.xml"),
+            "--html", str(report_dir / "test-report.html"),
             "--self-contained-html",
+            "--alluredir", str(report_dir / "allure-results"),
             "--tb=long",  # Full tracebacks for AI repair context
         ])
 
@@ -79,7 +77,6 @@ def run_pytest(test_file: Path, collect_only: bool = False) -> TestResult:
             command,
             capture_output=True,
             text=True,
-            cwd=project_root,
             timeout=180,  # 3-minute timeout per run
         )
     except subprocess.TimeoutExpired:
@@ -101,5 +98,5 @@ def run_pytest(test_file: Path, collect_only: bool = False) -> TestResult:
         duration=duration,
         stdout=completed.stdout,
         stderr=completed.stderr,
-        report_path=str(reports_dir / "test-results.xml") if not collect_only else "",
+        report_path=str(report_dir / "test-results.xml") if not collect_only else "",
     )

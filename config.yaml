@@ -1,23 +1,34 @@
-# ──────────────────────────────────────────────
-#  AI QA Agent — Configuration
-# ──────────────────────────────────────────────
-
-target_url: "https://trellos.goyal.me"
-
-# "ui" (Playwright browser tests) or "api" (requests-based API tests)
-test_type: "ui"
-
-# Google GenAI model to use
-model: "gemini-3.6-flash"
-
-# How many times the AI can attempt to repair failing tests
+model: gemini-3.8-flash
 max_repair_attempts: 3
+ui:
+  enabled: true
+  target_url: https://trellos.goyal.me
+  instructions: 'Generate a comprehensive UI test suite for this application.
 
-# High-level instructions for the AI test suite generator.
-# The AI will analyze the page and create specific test cases from these.
-instructions: |
-  Generate a comprehensive test suite for this application.
-  Explore the page and identify all testable features.
-  Note: This website does NOT require authentication. Do not write login tests.
-  Cover navigation, core functionality, and edge cases based on what you observe on the page.
-  Make tests independent where possible.
+    Explore the page and identify all testable features.
+
+    Note: This website does NOT require authentication. Do not write login tests.
+
+    Cover navigation, core functionality, and edge cases based on what you observe
+    on the page.
+
+    Make tests independent where possible.
+
+    Try to cover as many cases as possible
+    '
+api:
+  enabled: true
+  base_url: https://trello-clone-api-ygvt.onrender.com
+  readme_path: C:\Users\chaha\OneDrive\Desktop\coding\trello-clone\README.md
+  instructions: 'Generate a comprehensive API test suite based on the provided README
+    / endpoint documentation.
+
+    Cover all CRUD operations, error handling, edge cases, and status code validation.
+
+    Make tests independent where possible.
+
+    Note: This website does NOT require authentication. Do not write login tests.
+
+    Try to cover as many cases as possible
+
+    '

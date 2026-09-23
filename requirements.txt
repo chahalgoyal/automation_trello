@@ -6,3 +6,4 @@ pytest-html
 playwright>=1.40.0
 requests
 pyyaml
+allure-pytest

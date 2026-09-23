@@ -1,7 +1,8 @@
 """
 Google GenAI client for test suite generation, code generation, and repair.
 
-Uses the native google-genai SDK (not the OpenAI compatibility shim).
+Uses the native google-genai SDK.
+Supports robust retry logic for transient 503 errors via exponential backoff.
 All LLM interactions go through this module.
 """
 
@@ -49,14 +50,23 @@ def _extract_markdown(content: str) -> str:
     return (match.group(1) if match else content).strip() + "\n"
 
 
-def _request(system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+# Fallback pool for this specific API key's available models
+FALLBACK_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-flash-latest"
+]
+
+def _request(system_prompt: str, user_prompt: str) -> str:
     """
     Send a generation request to GenAI with automatic retry on transient errors.
 
-    Retries up to 3 times on server errors (500/502/503/504).
+    If a model fails 5 times (e.g. 503 High Demand), it globally falls back
+    to the next model in the FALLBACK_MODELS list.
     Hard-fails immediately on quota exhaustion (429).
     """
-    model = model or _get_model()
     client = _get_client()
 
     config = types.GenerateContentConfig(
@@ -65,71 +75,92 @@ def _request(system_prompt: str, user_prompt: str, model: str | None = None) -> 
     )
 
     last_error = None
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=user_prompt,
-                config=config,
-            )
-            content = response.text or ""
-            if not content.strip():
-                raise RuntimeError("GenAI returned an empty response")
-            return content
+    
+    for model_name in FALLBACK_MODELS:
+        print(f"  [GenAI] Attempting request with model: {model_name}...")
+        for attempt in range(5):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=user_prompt,
+                    config=config,
+                )
+                content = response.text or ""
+                if not content.strip():
+                    raise RuntimeError("GenAI returned an empty response")
+                return content
 
-        except Exception as error:
-            last_error = error
-            error_str = str(error).lower()
+            except Exception as error:
+                last_error = error
+                error_str = str(error).lower()
 
-            # Quota exhaustion — no point retrying
-            if "429" in error_str or "quota" in error_str or "rate limit" in error_str:
-                raise RuntimeError(
-                    "GenAI quota exhausted. Wait for the quota to reset or "
-                    "use an API key with available billing/quota."
-                ) from error
+                # Quota exhaustion — break and try the next model (quotas are per-model)
+                if "429" in error_str and ("quota" in error_str or "rate limit" in error_str):
+                    print(f"  [GenAI] {model_name} quota exhausted (429). Switching to next model...")
+                    break
+                
+                # If we get a 404 (model not found/available), break out of the attempt loop and try the next model
+                if "404" in error_str or "not available" in error_str:
+                    print(f"  [GenAI] Model {model_name} unavailable (404). Switching to next model...")
+                    break 
 
-            # Last attempt — give up
-            if attempt == 2:
-                raise RuntimeError(
-                    f"GenAI request failed after 3 attempts: {error}"
-                ) from error
+                # Last attempt for this specific model — give up on it
+                if attempt == 4:
+                    print(f"  [GenAI] {model_name} failed after 5 attempts. Falling back to next model...")
+                    break
 
-            # Transient error — retry with backoff
-            wait = 2 ** attempt
-            print(f"  [GenAI] Transient error (attempt {attempt + 1}/3), "
-                  f"retrying in {wait}s: {error}")
-            time.sleep(wait)
+                # Transient error (like 503) — retry with longer exponential backoff
+                wait = 4 ** attempt  # 1s, 4s, 16s, 64s
+                print(f"  [GenAI] {model_name} transient error (attempt {attempt + 1}/5), "
+                      f"retrying in {wait}s: {error}")
+                time.sleep(wait)
 
-    # Should never reach here, but just in case
-    raise RuntimeError(f"GenAI request failed: {last_error}")
+    raise RuntimeError(f"GenAI request failed on all fallback models. Last error: {last_error}")
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
 
-def generate_test_suite(
+def generate_ui_test_suite(
     url: str,
     snapshot: str,
     instructions: str,
-    test_type: str = "ui",
 ) -> str:
     """
-    Generate a structured test suite .md from the application URL,
+    Generate a structured UI test suite .md from the application URL,
     browser snapshot, and user instructions.
-
-    This is the key differentiator: the AI creates the test specification
-    dynamically based on what it actually sees on the page.
     """
     user_prompt = (
         f"APPLICATION URL: {url}\n\n"
-        f"TEST TYPE: {test_type.upper()}\n\n"
+        f"TEST TYPE: UI\n\n"
         f"USER INSTRUCTIONS:\n{instructions}\n\n"
     )
     if snapshot:
         user_prompt += f"BROWSER ACCESSIBILITY SNAPSHOT:\n{snapshot}\n"
 
-    print("  [GenAI] Generating test suite specification...")
-    content = _request(prompts.SUITE_GENERATION_SYSTEM, user_prompt)
+    print("  [GenAI] Generating UI test suite specification...")
+    content = _request(prompts.UI_SUITE_GENERATION_SYSTEM, user_prompt)
+    return _extract_markdown(content)
+
+
+def generate_api_test_suite(
+    url: str,
+    readme_content: str,
+    instructions: str,
+) -> str:
+    """
+    Generate a structured API test suite .md from the base API URL,
+    project README/API documentation, and user instructions.
+    """
+    user_prompt = (
+        f"BASE API URL: {url}\n\n"
+        f"TEST TYPE: API\n\n"
+        f"USER INSTRUCTIONS:\n{instructions}\n\n"
+        f"API DOCUMENTATION (README):\n{readme_content}\n"
+    )
+
+    print("  [GenAI] Generating API test suite specification...")
+    content = _request(prompts.API_SUITE_GENERATION_SYSTEM, user_prompt)
     return _extract_markdown(content)
 
 
@@ -139,7 +170,7 @@ def generate_test_code(
     test_type: str = "ui",
 ) -> str:
     """
-    Generate executable pytest code from a test suite .md and browser snapshot.
+    Generate executable pytest code from a test suite .md and (optionally) browser snapshot.
     """
     system = (
         prompts.UI_CODE_GENERATION_SYSTEM
@@ -148,10 +179,10 @@ def generate_test_code(
     )
 
     user_prompt = f"TEST SUITE SPECIFICATION:\n{suite_md}\n\n"
-    if snapshot:
+    if snapshot and test_type == "ui":
         user_prompt += f"BROWSER ACCESSIBILITY SNAPSHOT:\n{snapshot}\n"
 
-    print("  [GenAI] Generating executable test code...")
+    print(f"  [GenAI] Generating executable {test_type.upper()} test code...")
     content = _request(system, user_prompt)
     return _extract_code(content)
 
@@ -174,13 +205,13 @@ def repair_test_code(
     )
 
     parts = [f"TEST SUITE SPECIFICATION:\n{suite_md}\n"]
-    if snapshot:
+    if snapshot and test_type == "ui":
         parts.append(f"BROWSER ACCESSIBILITY SNAPSHOT:\n{snapshot}\n")
     parts.append(f"CURRENT TEST CODE:\n{current_code}\n")
     parts.append(f"PYTEST FAILURE OUTPUT:\n{failure_output}\n")
 
     user_prompt = "\n".join(parts)
 
-    print("  [GenAI] Analyzing failure and generating repair...")
+    print(f"  [GenAI] Analyzing {test_type.upper()} failure and generating repair...")
     content = _request(system, user_prompt)
     return _extract_code(content)
