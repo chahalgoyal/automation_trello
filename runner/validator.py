@@ -45,7 +45,9 @@ def classify_failure(output: str) -> str:
     """
     text = output.lower()
 
-    if any(kw in text for kw in ("connection_timed_out", "network_changed", "net::err_")):
+    if any(
+        kw in text for kw in ("connection_timed_out", "network_changed", "net::err_")
+    ):
         return "blocked_network"
     if any(kw in text for kw in ("quota", "rate limit", "429")):
         return "blocked_ai_quota"

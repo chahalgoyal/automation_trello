@@ -40,13 +40,19 @@ def _get_model() -> str:
 
 def _extract_code(content: str) -> str:
     """Strip markdown code fences from LLM response, returning raw Python."""
-    match = re.search(r"```(?:python)?\s*(.*?)```", content, re.DOTALL | re.IGNORECASE)
+    # Use [^\`]+ instead of .*? to avoid super-linear backtracking (S8786)
+    match = re.search(
+        r"```(?:python)?[ \t]*\n?([\s\S]+?)(?=```)", content, re.IGNORECASE
+    )
     return (match.group(1) if match else content).strip() + "\n"
 
 
 def _extract_markdown(content: str) -> str:
     """Strip markdown fences if the LLM wraps the output."""
-    match = re.search(r"```(?:markdown)?\s*(.*?)```", content, re.DOTALL | re.IGNORECASE)
+    # Use [^\`]+ instead of .*? to avoid super-linear backtracking (S8786)
+    match = re.search(
+        r"```(?:markdown)?[ \t]*\n?([\s\S]+?)(?=```)", content, re.IGNORECASE
+    )
     return (match.group(1) if match else content).strip() + "\n"
 
 
@@ -56,8 +62,77 @@ FALLBACK_MODELS = [
     "gemini-3.5-flash",
     "gemini-3.7-flash",
     "gemini-3.8-flash",
-    "gemini-flash-latest"
+    "gemini-flash-latest",
 ]
+
+
+def _classify_model_error(error_str: str) -> str:
+    """
+    Classify a GenAI error string into an action.
+
+    Returns:
+        "switch"  — skip to the next model immediately
+        "retry"   — apply backoff and retry the same model
+    """
+    is_quota = "429" in error_str and (
+        "quota" in error_str or "rate limit" in error_str
+    )
+    is_unavailable = "404" in error_str or "not available" in error_str
+    if is_quota or is_unavailable:
+        return "switch"
+    return "retry"
+
+
+def _try_model(client, model_name: str, user_prompt: str, config) -> str:
+    """
+    Attempt up to 5 times to get a non-empty response from a single model.
+
+    Returns the response text on success.
+    Raises RuntimeError if the model should be skipped
+    (quota / unavailable / exhausted retries).
+    """
+    for attempt in range(5):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=user_prompt,
+                config=config,
+            )
+            content = response.text or ""
+            if not content.strip():
+                raise RuntimeError("GenAI returned an empty response")
+            return content
+
+        except Exception as error:
+            error_str = str(error).lower()
+            action = _classify_model_error(error_str)
+
+            if action == "switch":
+                label = (
+                    "quota exhausted (429)"
+                    if "429" in error_str
+                    else "unavailable (404)"
+                )
+                print(f"  [GenAI] {model_name} {label}. Switching to next model...")
+                raise RuntimeError(f"skip:{error}") from error
+
+            # Last attempt for this model
+            if attempt == 4:
+                print(
+                    f"  [GenAI] {model_name} failed after 5 attempts."
+                    " Falling back to next model..."
+                )
+                raise RuntimeError(f"skip:{error}") from error
+
+            wait = 4**attempt  # 1s, 4s, 16s, 64s
+            print(
+                f"  [GenAI] {model_name} transient error (attempt {attempt + 1}/5), "
+                f"retrying in {wait}s: {error}"
+            )
+            time.sleep(wait)
+
+    raise RuntimeError("Unreachable")  # pragma: no cover
+
 
 def _request(system_prompt: str, user_prompt: str) -> str:
     """
@@ -75,47 +150,17 @@ def _request(system_prompt: str, user_prompt: str) -> str:
     )
 
     last_error = None
-    
+
     for model_name in FALLBACK_MODELS:
         print(f"  [GenAI] Attempting request with model: {model_name}...")
-        for attempt in range(5):
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=user_prompt,
-                    config=config,
-                )
-                content = response.text or ""
-                if not content.strip():
-                    raise RuntimeError("GenAI returned an empty response")
-                return content
+        try:
+            return _try_model(client, model_name, user_prompt, config)
+        except RuntimeError as error:
+            last_error = error
 
-            except Exception as error:
-                last_error = error
-                error_str = str(error).lower()
-
-                # Quota exhaustion — break and try the next model (quotas are per-model)
-                if "429" in error_str and ("quota" in error_str or "rate limit" in error_str):
-                    print(f"  [GenAI] {model_name} quota exhausted (429). Switching to next model...")
-                    break
-                
-                # If we get a 404 (model not found/available), break out of the attempt loop and try the next model
-                if "404" in error_str or "not available" in error_str:
-                    print(f"  [GenAI] Model {model_name} unavailable (404). Switching to next model...")
-                    break 
-
-                # Last attempt for this specific model — give up on it
-                if attempt == 4:
-                    print(f"  [GenAI] {model_name} failed after 5 attempts. Falling back to next model...")
-                    break
-
-                # Transient error (like 503) — retry with longer exponential backoff
-                wait = 4 ** attempt  # 1s, 4s, 16s, 64s
-                print(f"  [GenAI] {model_name} transient error (attempt {attempt + 1}/5), "
-                      f"retrying in {wait}s: {error}")
-                time.sleep(wait)
-
-    raise RuntimeError(f"GenAI request failed on all fallback models. Last error: {last_error}")
+    raise RuntimeError(
+        f"GenAI request failed on all fallback models. Last error: {last_error}"
+    )
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -170,7 +215,8 @@ def generate_test_code(
     test_type: str = "ui",
 ) -> str:
     """
-    Generate executable pytest code from a test suite .md and (optionally) browser snapshot.
+    Generate executable pytest code from a test suite .md
+    and (optionally) a browser snapshot.
     """
     system = (
         prompts.UI_CODE_GENERATION_SYSTEM
@@ -199,9 +245,7 @@ def repair_test_code(
     and failure traceback to the AI for correction.
     """
     system = (
-        prompts.UI_REPAIR_SYSTEM
-        if test_type == "ui"
-        else prompts.API_REPAIR_SYSTEM
+        prompts.UI_REPAIR_SYSTEM if test_type == "ui" else prompts.API_REPAIR_SYSTEM
     )
 
     parts = [f"TEST SUITE SPECIFICATION:\n{suite_md}\n"]
