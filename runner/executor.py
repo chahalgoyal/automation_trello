@@ -109,3 +109,37 @@ def run_pytest(
         stderr=completed.stderr,
         report_path=str(report_dir / "test-results.xml") if not collect_only else "",
     )
+
+
+def execute_attempt(
+    generated_test: Path, report_dir: Path
+) -> tuple[str, "TestResult | None"]:
+    """
+    Validate syntax then run pytest for a single repair-loop attempt.
+
+    Returns:
+        (failure_output, result) — result is None if an unexpected exception
+        prevented the run from starting.
+    Raises:
+        SyntaxError / ValueError — propagated from validate_python so the
+        repair loop can catch them separately from runtime failures.
+    """
+    from runner.validator import validate_python  # local import avoids circular dep
+
+    validate_python(generated_test)
+    print("  [OK] Python syntax valid")
+
+    result = None
+    failure_output = ""
+    try:
+        collection = run_pytest(generated_test, report_dir, collect_only=True)
+        if collection.exit_code != 0:
+            print("  [FAIL] Test collection failed")
+            result = collection
+        else:
+            print("  [OK] Tests collected successfully")
+            result = run_pytest(generated_test, report_dir)
+    except Exception as error:
+        failure_output = str(error)
+
+    return failure_output, result
