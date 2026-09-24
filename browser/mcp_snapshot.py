@@ -47,7 +47,7 @@ async def _collect_snapshot(url: str) -> str:
             print(f"  [MCP] Navigated to {url}")
 
             # Wait a moment for any client-side rendering
-            await asyncio.sleep(2)
+            await asyncio.sleep(4)
 
             # Capture the accessibility snapshot
             result = await session.call_tool("browser_snapshot", {})

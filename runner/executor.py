@@ -20,11 +20,11 @@ from pathlib import Path
 class TestResult:
     """Structured result of a pytest execution."""
 
-    status: str          # "passed" or "failed"
-    exit_code: int       # pytest exit code
-    duration: float      # wall-clock seconds
-    stdout: str          # captured stdout
-    stderr: str          # captured stderr
+    status: str  # "passed" or "failed"
+    exit_code: int  # pytest exit code
+    duration: float  # wall-clock seconds
+    stdout: str  # captured stdout
+    stderr: str  # captured stderr
     report_path: str = ""  # path to JUnit XML report (empty for collect-only)
 
     @property
@@ -33,7 +33,9 @@ class TestResult:
         return self.stderr or self.stdout
 
 
-def run_pytest(test_file: Path, report_dir: Path, collect_only: bool = False) -> TestResult:
+def run_pytest(
+    test_file: Path, report_dir: Path, collect_only: bool = False
+) -> TestResult:
     """
     Execute pytest on the given test file and return structured results.
 
@@ -54,19 +56,26 @@ def run_pytest(test_file: Path, report_dir: Path, collect_only: bool = False) ->
         command.append("--collect-only")
     else:
         report_dir.mkdir(parents=True, exist_ok=True)
-        command.extend([
-            "--junitxml", str(report_dir / "test-results.xml"),
-            "--html", str(report_dir / "test-report.html"),
-            "--self-contained-html",
-            "--alluredir", str(report_dir / "allure-results"),
-            "--tb=long",  # Full tracebacks for AI repair context
-        ])
+        command.extend(
+            [
+                "--junitxml",
+                str(report_dir / "test-results.xml"),
+                "--html",
+                str(report_dir / "test-report.html"),
+                "--self-contained-html",
+                "--alluredir",
+                str(report_dir / "allure-results"),
+                "--tb=long",  # Full tracebacks for AI repair context
+            ]
+        )
 
     # Windows compatibility: wrap in cmd.exe
     if os.name == "nt":
         command = [
             os.environ.get("COMSPEC", "cmd.exe"),
-            "/d", "/s", "/c",
+            "/d",
+            "/s",
+            "/c",
             subprocess.list2cmdline(command),
         ]
 

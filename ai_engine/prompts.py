@@ -135,7 +135,8 @@ REQUIREMENTS:
 - Return ONLY one complete Python source file
 - Do NOT wrap the code in markdown fences (no ```python ... ```)
 - Do NOT include any explanation text before or after the code
-- Use environment variables for secrets: API_BASE_URL, API_TOKEN, TEST_EMAIL, TEST_PASSWORD
+- Read the API base URL from 'config.yaml' using the `yaml` module (e.g. `yaml.safe_load(...)['api']['base_url']`). Do NOT use environment variables for the base URL.
+- Use environment variables for secrets only (e.g., API_TOKEN, TEST_EMAIL, TEST_PASSWORD).
 - Include `from dotenv import load_dotenv` and call `load_dotenv()` at module level
 - The file must contain at least one function named `test_...`
 - Must be fully self-contained
@@ -179,7 +180,8 @@ REQUIREMENTS:
 - Do NOT wrap the code in markdown fences (no ```python ... ```)
 - Do NOT include any explanation text before or after the code
 - PRESERVE the intended API scenario — FIX the failing code, do NOT remove failing scenarios
-- Do not hardcode credentials or tokens; keep load_dotenv() and environment variables
+- Read the API base URL from 'config.yaml' using the `yaml` module (e.g. `yaml.safe_load(...)['api']['base_url']`). Do NOT use environment variables for the base URL.
+- Do not hardcode credentials or tokens; keep load_dotenv() and environment variables for secrets.
 - The result must contain at least one function named `test_...` and be valid Python
 - Analyze the traceback carefully to identify the root cause before making changes
 - Fix assertion logic, request payloads, or endpoint paths based on the error output

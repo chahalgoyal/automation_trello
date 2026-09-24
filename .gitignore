@@ -1,20 +1,51 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
 *.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
 .venv/
 venv/
+env/
+ENV/
 
-# Environment
+# Environment / secrets
 .env
 
-# Generated output (AI-created, not tracked)
+# Generated output (AI-created, not source-controlled)
 generated/
-reports/
+
+# Test / coverage artefacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.xml
+*.html
+allure-results/
 
 # Node.js (MCP dependency only)
 node_modules/
 package-lock.json
 
-# Playwright MCP logs
+# Playwright MCP logs / cache
 .playwright-mcp/
+playwright-report/
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# pre-commit cache
+.pre-commit-cache/
