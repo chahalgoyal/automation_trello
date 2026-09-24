@@ -7,7 +7,6 @@ All LLM interactions go through this module.
 """
 
 import os
-import re
 import time
 
 from dotenv import load_dotenv
@@ -33,27 +32,32 @@ def _get_client() -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
-def _get_model() -> str:
-    """Return the model name from env or default."""
-    return os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+def _strip_fences(content: str, lang_tags: tuple) -> str:
+    """
+    Extract the body of the first markdown code fence without regex.
+
+    Splits on ``` to avoid reluctant-quantifier backtracking (S6019).
+    lang_tags: lowercase language identifiers to strip from the opening line
+               (e.g. ("python", "py", "") or ("markdown", "md", "")).
+    """
+    parts = content.split("```")
+    if len(parts) < 3:
+        return content.strip() + "\n"
+    inner = parts[1]
+    newline_pos = inner.find("\n")
+    if newline_pos != -1 and inner[:newline_pos].strip().lower() in lang_tags:
+        inner = inner[newline_pos + 1 :]
+    return inner.strip() + "\n"
 
 
 def _extract_code(content: str) -> str:
     """Strip markdown code fences from LLM response, returning raw Python."""
-    # Use [^\`]+ instead of .*? to avoid super-linear backtracking (S8786)
-    match = re.search(
-        r"```(?:python)?[ \t]*\n?([\s\S]+?)(?=```)", content, re.IGNORECASE
-    )
-    return (match.group(1) if match else content).strip() + "\n"
+    return _strip_fences(content, ("python", "py", ""))
 
 
 def _extract_markdown(content: str) -> str:
     """Strip markdown fences if the LLM wraps the output."""
-    # Use [^\`]+ instead of .*? to avoid super-linear backtracking (S8786)
-    match = re.search(
-        r"```(?:markdown)?[ \t]*\n?([\s\S]+?)(?=```)", content, re.IGNORECASE
-    )
-    return (match.group(1) if match else content).strip() + "\n"
+    return _strip_fences(content, ("markdown", "md", ""))
 
 
 # Fallback pool for this specific API key's available models
@@ -83,13 +87,43 @@ def _classify_model_error(error_str: str) -> str:
     return "retry"
 
 
+def _handle_retry_error(error: Exception, attempt: int, model_name: str) -> None:
+    """
+    Handle an error from a single model attempt.
+
+    Raises RuntimeError("skip:...") if the model should be abandoned.
+    Otherwise applies exponential backoff and returns to allow a retry.
+    Extracted from _try_model to reduce its cognitive complexity (S3776).
+    """
+    error_str = str(error).lower()
+    action = _classify_model_error(error_str)
+
+    if action == "switch":
+        label = "quota exhausted (429)" if "429" in error_str else "unavailable (404)"
+        print(f"  [GenAI] {model_name} {label}. Switching to next model...")
+        raise RuntimeError(f"skip:{error}") from error
+
+    if attempt == 4:
+        print(
+            f"  [GenAI] {model_name} failed after 5 attempts."
+            " Falling back to next model..."
+        )
+        raise RuntimeError(f"skip:{error}") from error
+
+    wait = 4**attempt  # 1s, 4s, 16s, 64s
+    print(
+        f"  [GenAI] {model_name} transient error (attempt {attempt + 1}/5), "
+        f"retrying in {wait}s: {error}"
+    )
+    time.sleep(wait)
+
+
 def _try_model(client, model_name: str, user_prompt: str, config) -> str:
     """
     Attempt up to 5 times to get a non-empty response from a single model.
 
     Returns the response text on success.
-    Raises RuntimeError if the model should be skipped
-    (quota / unavailable / exhausted retries).
+    Raises RuntimeError("skip:...") if the model should be abandoned.
     """
     for attempt in range(5):
         try:
@@ -102,34 +136,8 @@ def _try_model(client, model_name: str, user_prompt: str, config) -> str:
             if not content.strip():
                 raise RuntimeError("GenAI returned an empty response")
             return content
-
         except Exception as error:
-            error_str = str(error).lower()
-            action = _classify_model_error(error_str)
-
-            if action == "switch":
-                label = (
-                    "quota exhausted (429)"
-                    if "429" in error_str
-                    else "unavailable (404)"
-                )
-                print(f"  [GenAI] {model_name} {label}. Switching to next model...")
-                raise RuntimeError(f"skip:{error}") from error
-
-            # Last attempt for this model
-            if attempt == 4:
-                print(
-                    f"  [GenAI] {model_name} failed after 5 attempts."
-                    " Falling back to next model..."
-                )
-                raise RuntimeError(f"skip:{error}") from error
-
-            wait = 4**attempt  # 1s, 4s, 16s, 64s
-            print(
-                f"  [GenAI] {model_name} transient error (attempt {attempt + 1}/5), "
-                f"retrying in {wait}s: {error}"
-            )
-            time.sleep(wait)
+            _handle_retry_error(error, attempt, model_name)
 
     raise RuntimeError("Unreachable")  # pragma: no cover
 
@@ -163,7 +171,7 @@ def _request(system_prompt: str, user_prompt: str) -> str:
     )
 
 
-# ── Public API ───────────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────
 
 
 def generate_ui_test_suite(

@@ -1,5 +1,7 @@
 [flake8]
 max-line-length = 88
+# E203: whitespace before ':' — black formats slice notation this way
+extend-ignore = E203
 per-file-ignores =
     # Prompt strings are intentional long literals — not code
     ai_engine/prompts.py: E501

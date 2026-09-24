@@ -54,24 +54,24 @@ generated/runs/run_YYYYMMDD_HHMMSS/
 ```
 automation_flow/
 │
-├── main.py                   # Orchestrator — wires all steps together
-│   ├── _collect_context()    # Step 1: browser snapshot or README
-│   ├── _generate_suite_and_code()  # Steps 2 & 3: AI generation
-│   ├── _run_repair_loop()    # Step 4: execute + repair
-│   └── run_pipeline()        # Top-level coordinator per mode
+├── main.py                   # Entry point — loads config & triggers pipeline
+│
+├── pipeline/                 # Core orchestration steps
+│   ├── context.py            # Step 1: UI snapshot or API README collection
+│   ├── generator.py          # Steps 2 & 3: AI suite & code generation
+│   ├── repair.py             # Step 4: test execution + AI repair loop
+│   ├── display.py            # Terminal output formatting
+│   └── _paths.py             # Shared directory constants
 │
 ├── ai_engine/
-│   ├── client.py             # Google GenAI calls (suite, code, repair)
-│   │   ├── _classify_model_error()  # Decide: retry vs. switch model
-│   │   ├── _try_model()      # Per-model retry with exponential backoff
-│   │   └── _request()        # Fallback across FALLBACK_MODELS list
+│   ├── client.py             # Google GenAI integrations (with retry backoff)
 │   └── prompts.py            # System prompt templates (one per phase)
 │
 ├── browser/
 │   └── mcp_snapshot.py       # Playwright MCP client — browser → a11y tree
 │
 ├── runner/
-│   ├── executor.py           # Runs pytest as subprocess, returns TestResult
+│   ├── executor.py           # Runs pytest as subprocess, captures TestResult
 │   └── validator.py          # Syntax check, failure classification, JSON report
 │
 ├── generated/                # [gitignored] All AI output lives here
